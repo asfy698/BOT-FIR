@@ -1,0 +1,234 @@
+# hardware/robot_controller.py - Facade for all robot hardware and services
+from hardware.motor_controller import MotorController
+from hardware.camera import Camera
+from services.gemini_client import GeminiClient
+from services.vision_api import VisionAPI
+import os
+import config
+import threading
+import time
+
+
+class RobotController:
+    """Facade that manages all hardware and API interactions for the robot."""
+
+    def __init__(self, use_real_sensors=True):
+        print("Initializing Robot Controller...")
+        self.motor_controller = MotorController()
+        self.camera = Camera()
+        self.gemini_client = GeminiClient()
+        self.vision_api = VisionAPI()
+        self.forward_running = False
+        self.forward_lock = threading.Lock()
+        self.forward_thread = None
+        
+        # Initialize ultrasonic sensors
+        self.use_real_sensors = use_real_sensors
+        self.ultrasonic_array = None
+        
+        # Always initialize random for fallback simulation
+        import random
+        self.random = random
+        self.sensor_base_left = 50
+        self.sensor_base_center = 50
+        self.sensor_base_right = 50
+        
+        if use_real_sensors:
+            try:
+                from hardware.ultrasonic_sensor import UltrasonicSensorArray
+                self.ultrasonic_array = UltrasonicSensorArray()
+                print("✓ Real ultrasonic sensors initialized")
+            except Exception as e:
+                print(f"⚠ Warning: Could not initialize real sensors: {e}")
+                print("⚠ Falling back to simulated sensors")
+                self.use_real_sensors = False
+        else:
+            print("⚠ Using SIMULATED sensors (for testing)")
+
+    # --- MOTOR CONTROL FUNCTIONS (delegate to MotorController) ---
+    def motors_forward(self):
+        self.motor_controller.motors_forward()
+
+    def motors_backward(self):
+        self.motor_controller.motors_backward()
+
+    def motors_turning_L(self):
+        self.motor_controller.motors_turning_L()
+
+    def motors_turning_R(self):
+        self.motor_controller.motors_turning_R()
+
+    def motors_stop(self):
+        self.motor_controller.motors_stop()
+
+    # --- OBSTACLE AVOIDANCE METHODS (from user code) ---
+    def move_forward(self):
+        """
+        FORCE BOTH MOTORS TO MOVE FORWARD
+        """
+        self.motor_controller.motors_forward()
+        print("→ Moving FORWARD")
+
+    def stop(self):
+        """Stop all motors"""
+        self.motor_controller.motors_stop()
+        print("■ Robot STOPPED")
+
+    # ---- Ultrasonic sensor methods ----
+    def get_left_distance(self):
+        """Get distance from left ultrasonic sensor in cm"""
+        if self.use_real_sensors and self.ultrasonic_array:
+            return self.ultrasonic_array.get_left_distance()
+        else:
+            # Simulated sensor (for testing)
+            variation = self.random.randint(-5, 5)
+            distance = max(10, self.sensor_base_left + variation)
+            return distance
+
+    def get_center_distance(self):
+        """Get distance from center ultrasonic sensor in cm"""
+        if self.use_real_sensors and self.ultrasonic_array:
+            return self.ultrasonic_array.get_center_distance()
+        else:
+            # Simulated sensor (for testing)
+            variation = self.random.randint(-5, 5)
+            distance = max(10, self.sensor_base_center + variation)
+            return distance
+
+    def get_right_distance(self):
+        """Get distance from right ultrasonic sensor in cm"""
+        if self.use_real_sensors and self.ultrasonic_array:
+            return self.ultrasonic_array.get_right_distance()
+        else:
+            # Simulated sensor (for testing)
+            variation = self.random.randint(-5, 5)
+            distance = max(10, self.sensor_base_right + variation)
+            return distance
+
+    def set_sensor_distances(self, left=None, center=None, right=None):
+        """
+        Set simulated sensor distances for testing.
+        Call this to simulate obstacles (set values below threshold, e.g., 15cm).
+        Set to None to use default (50cm).
+        """
+        if left is not None:
+            self.sensor_base_left = left
+        if center is not None:
+            self.sensor_base_center = center
+        if right is not None:
+            self.sensor_base_right = right
+        print(f"Sensor distances set: L={self.sensor_base_left}cm, C={self.sensor_base_center}cm, R={self.sensor_base_right}cm")
+
+    def start_continuous_forward_with_obstacle_check(self, obstacle_avoider=None):
+        """
+        Start forward movement for 3 seconds with obstacle checking.
+        Moves forward for 3 seconds and checks for obstacles during that time.
+        Stops immediately if obstacle is detected.
+        If obstacle_avoider is not provided, creates one.
+        """
+        # Import here to avoid circular dependency
+        if obstacle_avoider is None:
+            from sensors.object_avoid import ObstacleAvoider
+            obstacle_avoider = ObstacleAvoider(self)
+        
+        with self.forward_lock:
+            if self.forward_running:
+                print("Forward already running")
+                return
+            self.forward_running = True
+        
+        def continuous_forward():
+            print("▶ Robot started: Moving forward & checking obstacles")
+            start_time = time.time()
+            duration_seconds = 3.0  # Run for 3 seconds
+            
+            try:
+                # Start moving forward
+                self.move_forward()
+                
+                # Check for obstacles while moving for 3 seconds
+                while self.forward_running:
+                    # Check if 3 seconds have elapsed
+                    elapsed = time.time() - start_time
+                    if elapsed >= duration_seconds:
+                        print("3 seconds elapsed. Stopping forward movement.")
+                        break
+                    
+                    # Check for obstacles frequently while moving
+                    if obstacle_avoider.obstacle_detected():
+                        self.stop()
+                        print("⚠ Obstacle detected! Robot halted.")
+                        try:
+                            self.speak("Obstacle detected. Stopping.")
+                        except Exception:
+                            pass
+                        break
+                    
+                    # Small delay between obstacle checks (check frequently)
+                    time.sleep(0.1)  # Check every 100ms for responsive obstacle detection
+                    
+            except Exception as e:
+                print(f"Error in continuous forward: {e}")
+            finally:
+                self.stop()
+                with self.forward_lock:
+                    self.forward_running = False
+                print("Forward movement stopped")
+        
+        self.forward_thread = threading.Thread(target=continuous_forward, daemon=True)
+        self.forward_thread.start()
+
+    def stop_continuous_forward(self):
+        """Stop continuous forward movement"""
+        with self.forward_lock:
+            self.forward_running = False
+
+    # --- CAMERA FUNCTIONS (delegate to Camera) ---
+    def take_picture(self):
+        return self.camera.take_picture()
+
+    def capture_image(self):
+        """Wrapper for take_picture that returns path or None"""
+        return self.camera.capture_image()
+
+    def get_image_data_uri(self, image_path=None):
+        """Get image data URI (delegates to VisionAPI)."""
+        if image_path is None:
+            image_path = config.IMAGE_FILE_NAME
+        return self.vision_api.get_image_data_uri(image_path)
+
+    def detect_objects(self):
+        """Analyze image using Hugging Face API."""
+        return self.vision_api.detect_objects(config.IMAGE_FILE_NAME)
+
+    def analyze_image(self, image_path):
+        """Wrapper for detect_objects"""
+        return self.vision_api.analyze_image(image_path)
+
+    # --- GEMINI FUNCTIONS (delegate to GeminiClient) ---
+    def chat_with_gemini(self, prompt):
+        """Chat with Gemini API"""
+        return self.gemini_client.chat(prompt)
+
+    def speak(self, text):
+        """Generate and play text-to-speech"""
+        stt_manager = getattr(self, "stt_manager", None)
+        if stt_manager:
+            stt_manager.set_speaking(True)
+        try:
+            self.gemini_client.speak(text)
+        finally:
+            if stt_manager:
+                stt_manager.set_speaking(False)
+
+    # --- CLEANUP ---
+    def cleanup(self):
+        print("Cleaning up...")
+        self.motor_controller.cleanup()
+        if os.path.exists(config.IMAGE_FILE_NAME):
+            try:
+                os.remove(config.IMAGE_FILE_NAME)
+            except Exception:
+                pass
+        print("Done.")
+

@@ -1,0 +1,100 @@
+# main.py - Entry point for the robot control application
+
+print("MAIN STARTED")   # <- prevents blank terminal confusion
+
+import tkinter as tk
+from hardware.robot_controller import RobotController
+from gui.robot_face import RobotFace
+from stt.stt_manager import STTManager
+from sensors.object_avoid import ObstacleAvoider
+import config
+
+
+def safe_move_forward(robot, obstacle_avoid, gui):
+    """Start continuous forward movement with obstacle checking"""
+    print("SAFE FORWARD TRIGGERED")
+    robot.start_continuous_forward_with_obstacle_check(obstacle_avoid)
+    if gui:
+        gui.log("Moving forward with obstacle detection", "MOVE")
+
+
+def stop_robot(robot, gui):
+    print("STOP TRIGGERED")
+    robot.stop_continuous_forward()
+    robot.stop()
+    if gui:
+        gui.log("Robot stopped", "STOP")
+
+
+if __name__ == "__main__":
+    try:
+        print("INITIALIZING ROBOT")
+
+        # ---------------- ROBOT INIT ----------------
+        robot = RobotController()
+        obstacle_avoid = ObstacleAvoider(robot)
+
+        # ---------------- GUI INIT ----------------
+        root = tk.Tk()
+        root.title("Robot Control")
+        root.geometry("500x500")
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after(500, lambda: root.attributes("-topmost", False))
+
+        face = RobotFace(root, robot)
+
+        # ---------------- SAFE FORWARD BUTTON ----------------
+        safe_btn = tk.Button(
+            root,
+            text="SAFE FORWARD",
+            font=("Arial", 12, "bold"),
+            bg="green",
+            fg="white",
+            width=18,
+            command=lambda: safe_move_forward(robot, obstacle_avoid, face)
+        )
+        safe_btn.pack(pady=10)
+
+        # ---------------- KEYBOARD CONTROLS ----------------
+        root.bind("<w>", lambda e: safe_move_forward(robot, obstacle_avoid, face))
+        root.bind("<s>", lambda e: stop_robot(robot, face))
+
+        # ---------------- STT SETUP ----------------
+        stt = STTManager(controller=robot, gui=face)
+
+        # ---------------- GREETING ----------------
+        greeting = (
+            "System initialized. I am Botfir. "
+            "Speed one gigahertz and memory one gigabyte. "
+            "Ready for commands."
+        )
+        robot.speak(greeting)
+        face.log("System initialized. Ready.", "SYSTEM")
+
+        # Start listening after the greeting so the robot does not transcribe
+        # its own startup audio. Direct commands do not require a wake word.
+        stt.ignore_transcripts_until = 0.0
+        stt.start()
+        config.logger.info("STT background started (direct-listening mode)")
+
+        print("GUI STARTING")
+        root.mainloop()
+
+    except KeyboardInterrupt:
+        print("SHUTDOWN REQUESTED")
+
+    except Exception as e:
+        print("CRITICAL ERROR:", e)
+
+    finally:
+        try:
+            if 'stt' in locals():
+                stt.stop()
+        except Exception:
+            pass
+
+        if 'robot' in locals():
+            robot.cleanup()
+
+        print("PROGRAM EXITED CLEANLY")

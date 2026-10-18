@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+**/__pycache__/
+*.py[cod]
+*.class
+*.so
+
+# Environment variables & secrets
+.env
+*.env
+!.env.example
+
+# Virtual environments
+assemblyai_project/
+venv/
+.venv/
+env/
+
+# Editor backups and scratch copies
+*.bak
+*.bak_*
+*-backup
+*.pre_*
+*.direct-listening-backup
+*.wakeword-backup
+
+# System, named pipes, and socket files
+.lgd-*
+.cache/
+.DS_Store
+Thumbs.db
